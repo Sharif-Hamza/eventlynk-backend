@@ -19,11 +19,18 @@ const supabase = createClient(
 );
 
 // Middleware
-app.use(express.json());
+app.use(express.json({
+  verify: function(req, res, buf) {
+    if (req.originalUrl.startsWith('/webhook')) {
+      req.rawBody = buf.toString();
+    }
+  }
+}));
 app.use(cors({
-  origin: '*', // In production, you should specify your Netlify domain
-  methods: ['POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Client-Info', 'Apikey'],
+  origin: ['https://zesty-semifreddo-7c79e3.netlify.app', 'http://localhost:5173'], // Allow both Netlify and local development
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Stripe-Signature'],
+  credentials: true
 }));
 
 // Health check endpoint
@@ -36,6 +43,11 @@ app.post('/create-checkout-session', async (req, res) => {
   try {
     const { eventId, userId, successUrl, cancelUrl } = req.body;
 
+    if (!eventId || !userId || !successUrl || !cancelUrl) {
+      console.error('Missing required fields:', { eventId, userId, successUrl, cancelUrl });
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
     // Get event details from Supabase
     const { data: event, error: eventError } = await supabase
       .from('events')
@@ -43,8 +55,19 @@ app.post('/create-checkout-session', async (req, res) => {
       .eq('id', eventId)
       .single();
 
-    if (eventError) throw eventError;
-    if (!event) throw new Error('Event not found');
+    if (eventError) {
+      console.error('Error fetching event:', eventError);
+      throw eventError;
+    }
+    if (!event) {
+      console.error('Event not found:', eventId);
+      throw new Error('Event not found');
+    }
+
+    if (!event.price || event.price <= 0) {
+      console.error('Invalid event price:', event.price);
+      return res.status(400).json({ error: 'Invalid event price' });
+    }
 
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
@@ -55,7 +78,7 @@ app.post('/create-checkout-session', async (req, res) => {
             currency: 'usd',
             product_data: {
               name: event.title,
-              description: event.description,
+              description: event.description || '',
             },
             unit_amount: Math.round(event.price * 100), // Convert to cents
           },
@@ -71,11 +94,79 @@ app.post('/create-checkout-session', async (req, res) => {
       },
     });
 
+    // Create registration with pending status
+    const { error: regError } = await supabase
+      .from('event_registrations')
+      .insert([{
+        event_id: eventId,
+        user_id: userId,
+        status: 'pending',
+        payment_status: 'pending',
+        payment_amount: event.price,
+        stripe_session_id: session.id
+      }]);
+
+    if (regError) {
+      console.error('Error creating registration:', regError);
+      throw regError;
+    }
+
     res.json({ url: session.url });
   } catch (error) {
-    console.error('Error creating checkout session:', error);
-    res.status(400).json({ error: error.message });
+    console.error('Checkout session error:', error);
+    res.status(500).json({ error: error.message });
   }
+});
+
+// Stripe webhook endpoint
+app.post('/webhook', async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.rawBody,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error('Webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // Handle the checkout.session.completed event
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const { eventId, userId } = session.metadata;
+
+    try {
+      // Update registration status
+      const { error } = await supabase
+        .from('event_registrations')
+        .update({
+          status: 'approved',
+          payment_status: 'completed',
+          stripe_payment_intent_id: session.payment_intent
+        })
+        .match({
+          event_id: eventId,
+          user_id: userId,
+          stripe_session_id: session.id
+        });
+
+      if (error) {
+        console.error('Error updating registration:', error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      console.log(`✅ Registration approved for event ${eventId} and user ${userId}`);
+    } catch (error) {
+      console.error('Error processing webhook:', error);
+      return res.status(400).json({ error: error.message });
+    }
+  }
+
+  res.json({ received: true });
 });
 
 app.listen(port, () => {
