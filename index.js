@@ -10,11 +10,18 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Initialize Stripe
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+let stripe;
+try {
+  stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+  console.log('Stripe initialized successfully');
+} catch (error) {
+  console.error('Error initializing Stripe:', error);
+}
 
 // Debug logging for environment variables
 console.log('Environment check:', {
   stripeKeyExists: !!process.env.STRIPE_SECRET_KEY,
+  stripeKeyPrefix: process.env.STRIPE_SECRET_KEY?.substring(0, 7),
   supabaseUrlExists: !!process.env.SUPABASE_URL,
   supabaseKeyExists: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
 });
@@ -84,63 +91,85 @@ app.post('/create-checkout-session', async (req, res) => {
       return res.status(400).json({ error: 'Invalid event price' });
     }
 
-    console.log('Creating Stripe session for event:', event.title);
-    // Create Stripe checkout session
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: {
-              name: event.title,
-              description: event.description || '',
-            },
-            unit_amount: Math.round(event.price * 100), // Convert to cents
-          },
-          quantity: 1,
-        },
-      ],
-      mode: 'payment',
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      metadata: {
-        eventId,
-        userId,
-      },
+    console.log('Creating Stripe session for event:', {
+      title: event.title,
+      price: event.price,
+      currency: 'usd'
     });
 
-    console.log('Stripe session created:', session.id);
+    try {
+      // Create Stripe checkout session
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ['card'],
+        line_items: [
+          {
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: event.title,
+                description: event.description || '',
+              },
+              unit_amount: Math.round(event.price * 100), // Convert to cents
+            },
+            quantity: 1,
+          },
+        ],
+        mode: 'payment',
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        metadata: {
+          eventId,
+          userId,
+        },
+      });
 
-    console.log('Creating registration record');
-    // Create registration with pending status
-    const { error: regError } = await supabase
-      .from('event_registrations')
-      .insert([{
-        event_id: eventId,
-        user_id: userId,
-        status: 'pending',
-        payment_status: 'pending',
-        payment_amount: event.price,
-        stripe_session_id: session.id
-      }]);
+      console.log('Stripe session created:', {
+        sessionId: session.id,
+        url: session.url
+      });
 
-    if (regError) {
-      console.error('Error creating registration:', regError);
-      throw regError;
+      console.log('Creating registration record');
+      // Create registration with pending status
+      const { error: regError } = await supabase
+        .from('event_registrations')
+        .insert([{
+          event_id: eventId,
+          user_id: userId,
+          status: 'pending',
+          payment_status: 'pending',
+          payment_amount: event.price,
+          stripe_session_id: session.id
+        }]);
+
+      if (regError) {
+        console.error('Error creating registration:', regError);
+        throw regError;
+      }
+
+      console.log('Registration created successfully');
+      res.json({ url: session.url });
+    } catch (stripeError) {
+      console.error('Stripe session creation error:', {
+        error: stripeError.message,
+        type: stripeError.type,
+        code: stripeError.code,
+        decline_code: stripeError.decline_code,
+        stack: stripeError.stack
+      });
+      throw stripeError;
     }
-
-    console.log('Registration created successfully');
-    res.json({ url: session.url });
   } catch (error) {
     console.error('Checkout session error:', {
       error: error.message,
-      stack: error.stack,
-      name: error.name
+      type: error.type,
+      code: error.code,
+      decline_code: error.decline_code,
+      stack: error.stack
     });
     res.status(500).json({ 
       error: error.message,
-      type: error.name,
+      type: error.type,
+      code: error.code,
       details: error.stack
     });
   }
