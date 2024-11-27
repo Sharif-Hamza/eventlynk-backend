@@ -12,6 +12,13 @@ const port = process.env.PORT || 3000;
 // Initialize Stripe
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+// Debug logging for environment variables
+console.log('Environment check:', {
+  stripeKeyExists: !!process.env.STRIPE_SECRET_KEY,
+  supabaseUrlExists: !!process.env.SUPABASE_URL,
+  supabaseKeyExists: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+});
+
 // Initialize Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -41,6 +48,11 @@ app.get('/', (req, res) => {
 // Create checkout session endpoint
 app.post('/create-checkout-session', async (req, res) => {
   try {
+    console.log('Received checkout request:', {
+      body: req.body,
+      headers: req.headers,
+    });
+
     const { eventId, userId, successUrl, cancelUrl } = req.body;
 
     if (!eventId || !userId || !successUrl || !cancelUrl) {
@@ -48,6 +60,7 @@ app.post('/create-checkout-session', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    console.log('Fetching event details for:', eventId);
     // Get event details from Supabase
     const { data: event, error: eventError } = await supabase
       .from('events')
@@ -64,11 +77,14 @@ app.post('/create-checkout-session', async (req, res) => {
       throw new Error('Event not found');
     }
 
+    console.log('Event details:', event);
+
     if (!event.price || event.price <= 0) {
       console.error('Invalid event price:', event.price);
       return res.status(400).json({ error: 'Invalid event price' });
     }
 
+    console.log('Creating Stripe session for event:', event.title);
     // Create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
@@ -94,6 +110,9 @@ app.post('/create-checkout-session', async (req, res) => {
       },
     });
 
+    console.log('Stripe session created:', session.id);
+
+    console.log('Creating registration record');
     // Create registration with pending status
     const { error: regError } = await supabase
       .from('event_registrations')
@@ -111,10 +130,19 @@ app.post('/create-checkout-session', async (req, res) => {
       throw regError;
     }
 
+    console.log('Registration created successfully');
     res.json({ url: session.url });
   } catch (error) {
-    console.error('Checkout session error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Checkout session error:', {
+      error: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    res.status(500).json({ 
+      error: error.message,
+      type: error.name,
+      details: error.stack
+    });
   }
 });
 
