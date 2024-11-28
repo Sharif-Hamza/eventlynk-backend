@@ -129,12 +129,30 @@ app.post('/create-checkout-session', async (req, res) => {
       });
 
       console.log('Creating registration record');
+      // Get user email from Supabase
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('email')
+        .eq('id', userId)
+        .single();
+
+      if (userError) {
+        console.error('Error fetching user:', userError);
+        throw userError;
+      }
+
+      if (!userData || !userData.email) {
+        console.error('User email not found');
+        throw new Error('User email not found');
+      }
+
       // Create registration with pending status
       const { error: regError } = await supabase
         .from('event_registrations')
         .insert([{
           event_id: eventId,
           user_id: userId,
+          email: userData.email,
           status: 'pending',
           payment_status: 'pending',
           payment_amount: event.price,
