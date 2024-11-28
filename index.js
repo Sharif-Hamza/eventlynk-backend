@@ -129,19 +129,15 @@ app.post('/create-checkout-session', async (req, res) => {
       });
 
       console.log('Creating registration record');
-      // Get user email from Supabase
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select('email')
-        .eq('id', userId)
-        .single();
+      // Get user email from Supabase auth admin API
+      const { data: userData, error: userError } = await supabase.auth.admin.getUserById(userId);
 
       if (userError) {
         console.error('Error fetching user:', userError);
         throw userError;
       }
 
-      if (!userData || !userData.email) {
+      if (!userData?.user?.email) {
         console.error('User email not found');
         throw new Error('User email not found');
       }
@@ -152,7 +148,7 @@ app.post('/create-checkout-session', async (req, res) => {
         .insert([{
           event_id: eventId,
           user_id: userId,
-          email: userData.email,
+          email: userData.user.email,
           status: 'pending',
           payment_status: 'pending',
           payment_amount: event.price,
