@@ -152,7 +152,10 @@ app.post('/create-checkout-session', async (req, res) => {
           status: 'pending',
           payment_status: 'pending',
           payment_amount: event.price,
-          stripe_session_id: session.id
+          payment_method: 'stripe',
+          stripe_session_id: session.id,
+          ticket_number: Math.floor(1000 + Math.random() * 9000).toString(),
+          ticket_status: 'VALID'
         }]);
 
       if (regError) {
@@ -215,8 +218,9 @@ app.post('/webhook', async (req, res) => {
       const { error } = await supabase
         .from('event_registrations')
         .update({
-          status: 'approved',
+          status: 'pending',  // Keep as pending for admin approval
           payment_status: 'completed',
+          payment_method: 'stripe',
           stripe_payment_intent_id: session.payment_intent
         })
         .match({
